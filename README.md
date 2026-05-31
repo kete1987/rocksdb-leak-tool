@@ -92,47 +92,82 @@ java -jar target/rocksdb-leak-reproducer-1.0-SNAPSHOT.jar \
 
 ---
 
-## Expected Results
+## Test Results
 
 All runs: 60 iterations, `--no-gc`, `--cache-mb 8`, 10,000 key-value pairs per iteration
 (~9 MB data, enough to fully populate an 8 MB block cache).
+Executed on Windows 11 (WorkingSet64 metric via PowerShell). Java 11.0.28 (Microsoft build).
 
 ### Leak mode
 
 ```
-Iter    VmRSS (kB)    Delta (kB)
-1       191576        +0
-5       341572        +8232         <-- ~8 MB/iter = one LRUCache per cycle
-10      382604        +8148
-20      464704        +8204
-30      525216        +8180
-60      771480        +8144
+OS: Windows | Mode: leak | Iterations: 60 | Cache: 8 MB | GC forced: false
+Iter    WorkingSet (kB)   Delta (kB)
+----------------------------------------
+1       279716            +0
+2       290096            +10380
+3       351364            +61268        (JVM warmup)
+4       412212            +60848        (JVM warmup)
+5       473944            +61732        (JVM warmup)
+6       512584            +38640        (JVM warmup)
+7       521804            +9220
+8       413856            -107948       (OS page reclaim after warmup spike)
+9       433144            +19288
+10      441028            +7884         <-- ~8 MB/iter from here: one LRUCache leaked per cycle
+11      449552            +8524
+12      458476            +8924
+13      466584            +8108
+20      526976            +8308
+30      612436            +8496
+40      698708            +8112
+50      785688            +8580
+60      872120            +8640
 
-Total growth : +566 MB  (~8 MB x 60 iters after warmup)
+Memory at start : 279716 kB
+Memory at end   : 872120 kB
+Total growth    : +592404 kB  (~+578 MB)
 ```
 
 ### Fixed mode
 
 ```
-Iter    VmRSS (kB)    Delta (kB)
-1       214160        +0
-5       334060        -24           <-- flat after warmup
-20      318488        -15964        (OS page reclaim)
-60      311296        -36
+OS: Windows | Mode: fixed | Iterations: 60 | Cache: 8 MB | GC forced: false
+Iter    WorkingSet (kB)   Delta (kB)
+----------------------------------------
+1       214864            +0
+2       245356            +30492        (JVM warmup)
+3       290568            +45212        (JVM warmup)
+4       351376            +60808        (JVM warmup)
+5       402980            +51604        (JVM warmup)
+6       434392            +31412        (JVM warmup)
+7       435048            +656          <-- flat from here
+8       435368            +320
+10      351696            -85628        (OS page reclaim)
+11      345684            -6012
+15      346068            +56
+20      344552            -1552
+30      345548            -220
+40      354800            +8744         (OS scheduling noise)
+41      345520            -9280         (immediately reclaimed)
+50      346424            -124
+60      346444            +952
 
-Total growth : +95 MB  (all JVM warmup, flat after iter ~5)
+Memory at start : 214864 kB
+Memory at end   : 346444 kB
+Total growth    : +131580 kB  (~+128 MB, all JVM warmup -- flat after iter 7)
 ```
 
 ### Summary
 
 | Metric | Leak | Fixed | Improvement |
 |--------|------|-------|-------------|
-| Total memory growth | **+566 MB** | **+95 MB** | **-471 MB** |
-| Growth per iter (post-warmup) | **~8 MB** | **~0 KB** | **~8 MB saved/iter** |
-| Pattern | Linear | Flat | |
+| Total memory growth | **+578 MB** | **+128 MB** | **-450 MB** |
+| Growth per iter (post-warmup) | **~8.5 MB constant** | **~0 KB (OS noise)** | **~8.5 MB saved/iter** |
+| Pattern | Linear growth | Flat | |
 
-The **+8 MB/iter** matches exactly `--cache-mb 8` (Spark default `blockCacheSizeMB`),
-confirming `LRUCache` as the sole leak source.
+The **~8.5 MB/iter** matches `--cache-mb 8` (Spark default `blockCacheSizeMB`), confirming
+`LRUCache` as the sole leak source. In fixed mode the occasional +8 MB spikes are immediately
+followed by -8 MB reclaims, showing the OS recovering the freed native memory.
 
 ---
 
